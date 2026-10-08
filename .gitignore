@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.chrome-smoke/
+./SECURITY_AUDIT.md
+dist*
+SECURITY*
