@@ -14,7 +14,7 @@ El importador analiza el comando como texto. Extrae URL, método y cabeceras com
 
 Puede importarse un HAR local para crear reglas desde cabeceras de solicitud, respuesta o ambas. Se aplican límites de archivo, entradas y reglas. Los cuerpos, binarios, cabeceras protegidas y valores sensibles se omiten.
 
-La exportación del grabador vuelve a sanear URL y cabeceras. Los cuerpos se omiten deliberadamente.
+La exportación del grabador vuelve a sanear URL y cabeceras e incluye los cuerpos de respuesta capturados durante la sesión. Los cuerpos pueden contener información sensible y deben tratarse como datos privados.
 
 ## Requestly
 

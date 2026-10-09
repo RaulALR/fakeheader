@@ -1619,6 +1619,30 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.recorder-response-body {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border, #d9dfeb);
+}
+
+.recorder-response-body p {
+  margin: 4px 0 0;
+}
+
+.recorder-response-body pre {
+  max-height: 420px;
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border, #d9dfeb);
+  border-radius: 8px;
+  background: #111827;
+  color: #e5e7eb;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .recorder-popup-card {
   margin-top: 10px;
 }

@@ -2,7 +2,11 @@ import { LEGACY_STORAGE_KEY, STORAGE_KEY, TAB_ALARM_PREFIX } from '../config';
 import { clearScriptActivity, getActiveTabs, getScriptActivity } from '../storage/storage';
 import {
   clearRecordings,
+  ensureResponseCapture,
   getRecorderState,
+  migrateReplacedRecording,
+  recordResponseCapture,
+  registerDebuggerCaptureListeners,
   registerTrafficRecorderListeners,
   startRecording,
   stopAllRecordings,
@@ -21,6 +25,7 @@ import {
   getExecutionInspector,
   getConfigurationHistory,
   getTabExecutionState,
+  migrateReplacedTab,
   reconcileStoredConfiguration,
   handleCommittedNavigation,
   restoreConfigurationSnapshot,
@@ -30,6 +35,7 @@ import {
 
 try {
   registerTrafficRecorderListeners();
+  registerDebuggerCaptureListeners();
 } catch {}
 
 try {
@@ -51,9 +57,7 @@ async function initialise(removeLegacy: boolean): Promise<void> {
 }
 
 function runSafely(operation: () => Promise<unknown>): void {
-  void enqueueOperation(operation)
-    .catch(() => enqueueOperation(disableEverywhere))
-    .catch(() => undefined);
+  void enqueueOperation(operation).catch(() => undefined);
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -69,15 +73,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.permissions.onRemoved.addListener((permissions) => {
   runSafely(disableEverywhere);
-  if (permissions.permissions?.includes('webRequest'))
+  if (
+    permissions.permissions?.some((permission) =>
+      ['webRequest', 'scripting', 'webNavigation'].includes(permission),
+    )
+  )
     void stopAllRecordings().catch(() => undefined);
 });
 
 chrome.webNavigation?.onCommitted.addListener((details) => {
   if (details.frameId !== 0) return;
+  const responseCapture = ensureResponseCapture(details.tabId);
   runSafely(async () => {
     const navigation = await handleCommittedNavigation(details.tabId, details.url);
-    if (navigation.ok) await executeNavigationScripts(details.tabId, details.url);
+    await Promise.allSettled([
+      responseCapture,
+      ...(navigation.ok ? [executeNavigationScripts(details.tabId, details.url)] : []),
+    ]);
     return navigation;
   });
 });
@@ -104,11 +116,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void stopRecording(tabId).catch(() => undefined);
 });
 chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
-  void stopRecording(removedTabId).catch(() => undefined);
-  void clearRecordings(addedTabId).catch(() => undefined);
   runSafely(async () => {
-    await removeClosedTab(removedTabId);
-    await deactivateTab(addedTabId);
+    const migration = await migrateReplacedTab(addedTabId, removedTabId);
+    await migrateReplacedRecording(addedTabId, removedTabId);
+    if (!migration.ok) return migration;
+    const tab = await chrome.tabs.get(addedTabId).catch(() => undefined);
+    if (tab?.url) {
+      await Promise.allSettled([
+        executeNavigationScripts(addedTabId, tab.url),
+        ensureResponseCapture(addedTabId),
+      ]);
+    }
+    return migration;
   });
 });
 
@@ -134,6 +153,8 @@ interface RuntimeMessage {
   snapshotId?: string;
   label?: string;
   scriptId?: string;
+  captureToken?: string;
+  responseCapture?: unknown;
 }
 
 function parseMessage(value: unknown): RuntimeMessage | null {
@@ -159,10 +180,12 @@ function parseMessage(value: unknown): RuntimeMessage | null {
     ...(typeof record.snapshotId === 'string' ? { snapshotId: record.snapshotId } : {}),
     ...(typeof record.label === 'string' ? { label: record.label } : {}),
     ...(typeof record.scriptId === 'string' ? { scriptId: record.scriptId } : {}),
+    ...(typeof record.captureToken === 'string' ? { captureToken: record.captureToken } : {}),
+    ...('responseCapture' in record ? { responseCapture: record.responseCapture } : {}),
   };
 }
 
-chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
   const message = parseMessage(raw);
   if (!message) return false;
   let operation: Promise<OperationResult> | null = null;
@@ -187,13 +210,19 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
     operation = enqueueOperation(() => getTabExecutionState(message.tabId!));
   if (message.type === 'get-execution-inspector')
     operation = enqueueOperation(getExecutionInspector);
-  if (message.type === 'get-recorder-state') operation = enqueueOperation(getRecorderState);
+  if (message.type === 'get-recorder-state') operation = getRecorderState();
   if (message.type === 'start-recording' && message.tabId !== undefined)
     operation = enqueueOperation(() => startRecording(message.tabId!));
   if (message.type === 'stop-recording' && message.tabId !== undefined)
     operation = enqueueOperation(() => stopRecording(message.tabId!));
   if (message.type === 'clear-recordings')
     operation = enqueueOperation(() => clearRecordings(message.tabId));
+  if (
+    message.type === 'record-response-body' &&
+    sender.tab?.id !== undefined &&
+    message.responseCapture !== undefined
+  )
+    operation = recordResponseCapture(sender.tab.id, message.captureToken, message.responseCapture);
   if (message.type === 'get-script-activity')
     operation = enqueueOperation(async () => ({ ok: true, activity: await getScriptActivity() }));
   if (message.type === 'clear-script-activity')

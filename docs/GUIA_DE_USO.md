@@ -43,7 +43,9 @@ El mundo `USER_SCRIPT` está aislado de la página y es el valor recomendado. `M
 
 ## Grabador de tráfico
 
-El grabador observa solicitudes de una pestaña activada. Conserva metadatos, tiempos y cabeceras saneadas, pero no guarda cuerpos. Puede exportar HAR o convertir cabeceras observadas en reglas desactivadas.
+El grabador observa solicitudes de una pestaña activada. Conserva metadatos, tiempos, cabeceras saneadas y los cuerpos completos disponibles de `fetch` y `XMLHttpRequest` durante la sesión de Chrome. Las respuestas binarias se almacenan en base64 y pueden descargarse. Puede exportar HAR o convertir cabeceras observadas en reglas desactivadas.
+
+La captura completa utiliza el depurador de red integrado de Chrome. DevTools debe permanecer cerrado en la pestaña mientras se graba; si se abre, Chrome desconecta el grabador y FakeHeader muestra el error en la sesión.
 
 ## Diagnóstico
 

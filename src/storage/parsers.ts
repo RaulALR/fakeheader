@@ -1,4 +1,5 @@
 import { MAX_HISTORY_SNAPSHOTS, MAX_SCRIPT_ACTIVITY, SCHEMA_VERSION } from '../config';
+import { upgradeBundledUserScriptCode } from '../scripts/bundled-code';
 import {
   validateEnvironment,
   validateId,
@@ -352,7 +353,7 @@ function parseUserScript(value: unknown): UserScriptRule {
     name: value.name.trim(),
     enabled: value.enabled,
     kind: value.kind === 'css' ? 'css' : 'javascript',
-    code: value.code,
+    code: upgradeBundledUserScriptCode(value.code),
     world: value.world as UserScriptRule['world'],
     injectImmediately: value.injectImmediately,
     execution: value.execution === 'navigation' ? 'navigation' : 'manual',

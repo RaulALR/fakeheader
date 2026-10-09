@@ -54,7 +54,7 @@ describe('cURL import', () => {
     expect(result.rules[0].requestMethods).toEqual(['post']);
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        'El body del request no se importa: DNR no permite modificarlo.',
+        'El cuerpo de la solicitud no se importa: DNR no permite modificarlo.',
         'Las credenciales Basic/Digest de --user no se importan.',
         'Se conservó el último valor de X-Test.',
       ]),

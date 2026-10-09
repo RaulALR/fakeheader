@@ -102,7 +102,7 @@ function ScriptCard({
               checked={draft.injectImmediately}
               onChange={(event) => setDraft({ ...draft, injectImmediately: event.target.checked })}
             />
-            Ejecutar inmediatamente
+            Inyectar sin esperar a que termine de cargar
           </label>
         )}
       </div>
@@ -134,6 +134,7 @@ function ScriptCard({
           </label>
           <p className="muted script-match-help">
             Usa patrones de coincidencia HTTP(S). Sólo se ejecutará si la pestaña está activada con este espacio de trabajo.
+            Al habilitarlo o modificarlo, recarga la página para aplicarlo a la siguiente navegación.
           </p>
         </div>
       )}

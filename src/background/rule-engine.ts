@@ -119,6 +119,21 @@ function activeProfileHasFeatures(settings: FakeHeaderSettings, profileId: strin
   );
 }
 
+export function activationProfileError(
+  settings: FakeHeaderSettings,
+  profileId: string,
+): string | null {
+  const profile = settings.profiles.find((item) => item.id === profileId);
+  if (!profile) return 'El perfil seleccionado no existe.';
+  if (!profile.enabled) return 'El perfil seleccionado está desactivado.';
+  if (activeProfileHasFeatures(settings, profileId)) return null;
+  const hasInactiveFeatures =
+    profile.rules.length > 0 || settings.scripts.some((script) => script.profileId === profileId);
+  return hasInactiveFeatures
+    ? 'El perfil tiene reglas o scripts, pero todos están desactivados. Activa al menos uno.'
+    : 'El perfil no tiene reglas ni scripts. Crea al menos uno antes de activar la pestaña.';
+}
+
 function activeProfileHasDnrRules(settings: FakeHeaderSettings, profileId: string): boolean {
   return Boolean(
     settings.profiles
@@ -207,11 +222,8 @@ export async function activateTab(
       error: 'El storage local está corrupto. FakeHeader permanece desactivado.',
     };
   }
-  if (!activeProfileHasFeatures(read.settings, profileId))
-    return {
-      ok: false,
-      error: 'El perfil no existe, está desactivado o no tiene reglas ni scripts activos.',
-    };
+  const profileError = activationProfileError(read.settings, profileId);
+  if (profileError) return { ok: false, error: profileError };
   if (environmentId && !read.settings.environments.some((item) => item.id === environmentId))
     return { ok: false, error: 'El entorno seleccionado no existe.' };
   if (!(await hasRequiredSafetyAccess(read.settings)))
@@ -334,6 +346,47 @@ export async function deactivateTab(tabId: number): Promise<OperationResult> {
   return result;
 }
 
+export async function migrateReplacedTab(
+  addedTabId: number,
+  removedTabId: number,
+): Promise<OperationResult> {
+  const [read, activeTabs, secrets] = await Promise.all([
+    readSettings(),
+    getActiveTabs(),
+    getSessionSecrets(),
+  ]);
+  if (!read.valid) {
+    await disableEverywhere();
+    return { ok: false, error: 'Storage corrupto; se han desactivado todas las pestañas.' };
+  }
+  const previous = activeTabs[String(removedTabId)];
+  const cleanTabs = withoutTab(withoutTab(activeTabs, removedTabId), addedTabId);
+  const nextTabs = previous
+    ? {
+        ...cleanTabs,
+        [String(addedTabId)]: { ...previous, tabId: addedTabId },
+      }
+    : cleanTabs;
+  const result = await commitTabTransition(
+    addedTabId,
+    nextTabs,
+    read.settings,
+    secrets,
+  );
+  if (!result.ok) return result;
+  try {
+    await syncTabAlarm(removedTabId);
+    await syncTabAlarm(addedTabId, previous?.expiresAt);
+    return result;
+  } catch {
+    if (previous) await deactivateTab(addedTabId);
+    return {
+      ok: false,
+      error: 'No se pudo migrar la caducidad a la pestaña sustituta.',
+    };
+  }
+}
+
 export async function getTabExecutionState(tabId: number): Promise<TabExecutionResult> {
   const [read, activeTabs, rules] = await Promise.all([
     readSettings(),
@@ -351,18 +404,36 @@ export async function getTabExecutionState(tabId: number): Promise<TabExecutionR
   }
   const hasRules = rules.some((rule) => rule.condition.tabIds?.includes(tabId));
   const expectsRules = state ? activeProfileHasDnrRules(read.settings, state.profileId) : false;
-  if (state && expectsRules && !hasRules) {
-    await writeActiveTabs(withoutTab(activeTabs, tabId));
-    await chrome.action.setBadgeText({ tabId, text: '' });
-    return { ok: true, enabled: false };
-  }
-  if (!state && hasRules) {
-    await reconcileStoredConfiguration();
-    const reconciledTabs = await getActiveTabs();
+  if ((state && expectsRules && !hasRules) || (!state && hasRules)) {
+    // DNR and storage are updated through separate Chrome APIs, so a worker restart or a
+    // partially completed update can leave them briefly out of sync. Reading status must never
+    // destroy the durable tab selection: rebuild the derived DNR rules from storage instead.
+    try {
+      await reconcileStoredConfiguration();
+    } catch {
+      return {
+        ok: false,
+        enabled: Boolean(state) && (hasRules || !expectsRules),
+        profileId: state?.profileId,
+        environmentId: state?.environmentId,
+        expiresAt: state?.expiresAt,
+        error: 'No se pudo verificar el estado de la pestaña. Se conserva la activación anterior.',
+      };
+    }
+    const [reconciledTabs, reconciledRules] = await Promise.all([
+      getActiveTabs(),
+      chrome.declarativeNetRequest.getSessionRules(),
+    ]);
     const reconciled = reconciledTabs[String(tabId)];
+    const reconciledExpectsRules = reconciled
+      ? activeProfileHasDnrRules(read.settings, reconciled.profileId)
+      : false;
+    const reconciledHasRules = reconciledRules.some((rule) =>
+      rule.condition.tabIds?.includes(tabId),
+    );
     return {
       ok: true,
-      enabled: Boolean(reconciled),
+      enabled: Boolean(reconciled) && (reconciledHasRules || !reconciledExpectsRules),
       profileId: reconciled?.profileId,
       environmentId: reconciled?.environmentId,
       expiresAt: reconciled?.expiresAt,
@@ -512,7 +583,7 @@ export async function removeClosedTab(tabId: number): Promise<void> {
 
 async function syncBadges(activeTabs: ActiveTabStateMap): Promise<void> {
   const tabs = await chrome.tabs.query({});
-  await Promise.all(
+  await Promise.allSettled(
     tabs.flatMap((tab) =>
       tab.id === undefined
         ? []

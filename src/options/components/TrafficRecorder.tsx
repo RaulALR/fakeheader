@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RECORDER_KEY } from '../../config';
 import { exportRecorderHar } from '../../recorder/har';
 import { rulesFromHar } from '../../recorder/har-import';
 import { rulesFromTrafficEntry } from '../../recorder/rule-import';
@@ -42,10 +43,13 @@ export function TrafficRecorder({
   const [methodFilter, setMethodFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const refreshVersion = useRef(0);
   const refresh = useCallback(async () => {
+    const version = ++refreshVersion.current;
     const response = (await chrome.runtime.sendMessage({
       type: 'get-recorder-state',
     })) as RecorderResult | undefined;
+    if (version !== refreshVersion.current) return;
     if (!response?.ok) return setError(response?.error ?? 'No se pudo leer el grabador.');
     setState(response.state ?? EMPTY_STATE);
     setError('');
@@ -53,7 +57,22 @@ export function TrafficRecorder({
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => void refresh(), 2000);
-    return () => window.clearInterval(timer);
+    let storageTimer: number | undefined;
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName === 'session' && changes[RECORDER_KEY]) {
+        if (storageTimer !== undefined) window.clearTimeout(storageTimer);
+        storageTimer = window.setTimeout(() => void refresh(), 100);
+      }
+    };
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => {
+      window.clearInterval(timer);
+      if (storageTimer !== undefined) window.clearTimeout(storageTimer);
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
   }, [refresh]);
   const sessions = useMemo(
     () => Object.values(state.tabs).sort((first, second) => second.startedAt - first.startedAt),
@@ -144,6 +163,41 @@ export function TrafficRecorder({
       URL.revokeObjectURL(url);
     } catch {
       setError('No se pudo generar el HAR local.');
+    }
+  };
+  const copyResponse = async (entry: TrafficEntry) => {
+    if (entry.responseBody === undefined) return;
+    try {
+      await navigator.clipboard.writeText(entry.responseBody);
+      setNotice('Respuesta copiada al portapapeles.');
+      window.setTimeout(() => setNotice(''), 1800);
+    } catch {
+      setError('No se pudo copiar la respuesta.');
+    }
+  };
+  const downloadResponse = (entry: TrafficEntry) => {
+    if (entry.responseBody === undefined) return;
+    try {
+      let blob: Blob;
+      if (entry.responseBodyEncoding === 'base64') {
+        const binary = window.atob(entry.responseBody);
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1)
+          bytes[index] = binary.charCodeAt(index);
+        blob = new Blob([bytes], { type: entry.responseMimeType || 'application/octet-stream' });
+      } else {
+        blob = new Blob([entry.responseBody], {
+          type: entry.responseMimeType || 'text/plain;charset=utf-8',
+        });
+      }
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `fakeheader-response-${entry.startedAt}`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError('No se pudo descargar la respuesta.');
     }
   };
   const createRules = async (entry: TrafficEntry, target: 'request' | 'response') => {
@@ -238,8 +292,9 @@ export function TrafficRecorder({
           </div>
         </div>
         <div className="notice">
-          Los cuerpos no se capturan. Las cookies, la autorización y los parámetros de consulta sensibles se
-          sustituyen por [REDACTED] antes de almacenarse.
+          Las respuestas completas de fetch y XHR permanecen en la sesión de Chrome y pueden contener datos
+          sensibles. Las cookies, la autorización y los parámetros de consulta sensibles de las cabeceras se
+          sustituyen por [REDACTED]. DevTools debe permanecer cerrado en la pestaña grabada.
         </div>
         <div className="recorder-filters">
           <input
@@ -332,6 +387,7 @@ export function TrafficRecorder({
                 </button>
               </div>
             </div>
+            {session.captureError && <div className="error">{session.captureError}</div>}
             <div className="recorder-entries">
               {[...(visibleEntries[String(session.tabId)] ?? [])].reverse().map((entry) => (
                 <details className="recorder-entry" key={`${entry.requestId}-${entry.startedAt}`}>
@@ -382,6 +438,59 @@ export function TrafficRecorder({
                           </code>
                         ))}
                       </div>
+                    </div>
+                    <div className="recorder-response-body">
+                      <div className="toolbar">
+                        <div>
+                          <strong>Respuesta completa</strong>
+                          <p className="muted">
+                            {entry.responseMimeType || 'Tipo desconocido'}
+                            {entry.responseBodySize !== undefined
+                              ? ` - ${entry.responseBodySize.toLocaleString()} bytes`
+                              : ''}
+                            {entry.responseBodyEncoding === 'base64' ? ' - binaria' : ''}
+                          </p>
+                        </div>
+                        {entry.responseBody !== undefined && (
+                          <div className="actions">
+                            {entry.responseBodyEncoding !== 'base64' && (
+                              <button
+                                className="button secondary small"
+                                onClick={() => void copyResponse(entry)}
+                              >
+                                Copiar
+                              </button>
+                            )}
+                            <button
+                              className="button secondary small"
+                              onClick={() => downloadResponse(entry)}
+                            >
+                              Descargar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {entry.responseBodyError && (
+                        <div className="error">{entry.responseBodyError}</div>
+                      )}
+                      {entry.responseBodyTruncated && (
+                        <div className="error">
+                          La respuesta supera el límite de sesión y se muestra parcialmente.
+                        </div>
+                      )}
+                      {entry.responseBody !== undefined ? (
+                        entry.responseBodyEncoding === 'base64' ? (
+                          <div className="empty">Respuesta binaria disponible para descarga.</div>
+                        ) : (
+                          <pre>{entry.responseBody}</pre>
+                        )
+                      ) : (
+                        !entry.responseBodyError && (
+                          <div className="empty">
+                            Esta petición no fue originada por fetch/XHR o terminó antes de capturar su cuerpo.
+                          </div>
+                        )
+                      )}
                     </div>
                   </div>
                 </details>

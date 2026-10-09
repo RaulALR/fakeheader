@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DELAY_HTTP_REQUESTS_CODE, LEGACY_DELAY_FETCH_CODE } from '../scripts/bundled-code';
 import { parseActiveTabs, parseHistory, parseSecrets, parseSettings } from './parsers';
 import { safeSettingsFromStorage } from './storage';
 
@@ -195,6 +196,35 @@ describe('untrusted storage parsing', () => {
         autoActivations: [source.autoActivations[0], { ...source.autoActivations[0], id: 'other' }],
       }),
     ).toThrow('Cada origen');
+  });
+  it('upgrades the unmodified legacy fetch delay template to fetch and XHR', () => {
+    const parsed = parseSettings({
+      schemaVersion: 8,
+      profiles: [{ id: 'p', name: 'P', enabled: true, rules: [] }],
+      environments: [],
+      templates: [],
+      autoActivations: [],
+      scripts: [
+        {
+          id: 'delay',
+          profileId: 'p',
+          name: 'Retrasar solicitudes fetch',
+          enabled: true,
+          kind: 'javascript',
+          world: 'MAIN',
+          injectImmediately: true,
+          execution: 'navigation',
+          matches: ['http://localhost/*'],
+          excludeMatches: [],
+          code: LEGACY_DELAY_FETCH_CODE,
+        },
+      ],
+      safety: { autoDisableOnNavigation: false },
+    });
+
+    expect(parsed.scripts[0].code).toBe(DELAY_HTTP_REQUESTS_CODE);
+    expect(parsed.scripts[0].code).toContain('XMLHttpRequest.prototype.send');
+    expect(parsed.scripts[0].code).not.toContain("const endpoint = '/api/example'");
   });
   it('strips sensitive values from untrusted history entries', () => {
     const history = parseHistory([

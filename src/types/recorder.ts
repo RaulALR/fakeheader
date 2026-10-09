@@ -18,6 +18,12 @@ export interface TrafficEntry {
   ip?: string;
   requestHeaders?: TrafficHeader[];
   responseHeaders?: TrafficHeader[];
+  responseBody?: string;
+  responseBodyEncoding?: 'base64';
+  responseBodySize?: number;
+  responseBodyTruncated?: boolean;
+  responseMimeType?: string;
+  responseBodyError?: string;
   error?: string;
 }
 
@@ -26,6 +32,8 @@ export interface RecorderTabSession {
   active: boolean;
   startedAt: number;
   stoppedAt?: number;
+  captureToken?: string;
+  captureError?: string;
   entries: TrafficEntry[];
 }
 

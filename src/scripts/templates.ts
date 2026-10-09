@@ -1,4 +1,5 @@
 import type { UserScriptRule } from '../types/profile';
+import { DELAY_HTTP_REQUESTS_CODE } from './bundled-code';
 
 export interface UserScriptTemplate {
   id: string;
@@ -201,10 +202,10 @@ html { outline: 3px solid #ff0078 !important; }`,
   },
   {
     id: 'delay-fetch',
-    title: 'Retrasar solicitudes fetch',
-    description: 'Añade latencia artificial a una ruta fetch para probar estados de carga.',
+    title: 'Retrasar solicitudes fetch/XHR',
+    description: 'Añade latencia artificial a fetch y XHR para probar estados de carga.',
     script: {
-      name: 'Retrasar solicitudes fetch',
+      name: 'Retrasar solicitudes fetch/XHR',
       enabled: false,
       kind: 'javascript',
       world: 'MAIN',
@@ -212,32 +213,7 @@ html { outline: 3px solid #ff0078 !important; }`,
       execution: 'manual',
       matches: [],
       excludeMatches: [],
-      code: `(() => {
-  const installationKey = Symbol.for('fakeheader.delayFetch');
-  if (window[installationKey]) return;
-
-  const originalFetch = window.fetch.bind(window);
-  const endpoint = '/api/example';
-  const delayMilliseconds = 1500;
-
-  window.fetch = async (input, init) => {
-    const requestUrl = new URL(
-      typeof input === 'string' || input instanceof URL ? input : input.url,
-      location.href
-    );
-    if (requestUrl.origin === location.origin && requestUrl.pathname === endpoint) {
-      await new Promise((resolve) => setTimeout(resolve, delayMilliseconds));
-    }
-    return originalFetch(input, init);
-  };
-
-  window[installationKey] = {
-    restore() {
-      window.fetch = originalFetch;
-      delete window[installationKey];
-    }
-  };
-})();`,
+      code: DELAY_HTTP_REQUESTS_CODE,
     },
   },
   {

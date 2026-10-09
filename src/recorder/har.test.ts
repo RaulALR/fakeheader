@@ -3,7 +3,7 @@ import type { RecorderState } from '../types/recorder';
 import { exportRecorderHar } from './har';
 
 describe('HAR export', () => {
-  it('redacts secrets and omits bodies', () => {
+  it('redacts header secrets and includes captured response bodies', () => {
     const state: RecorderState = {
       tabs: {
         '4': {
@@ -23,6 +23,9 @@ describe('HAR export', () => {
                 { name: 'iv-user', value: 'developer' },
               ],
               responseHeaders: [{ name: 'Set-Cookie', value: 'session=TOP_SECRET' }],
+              responseBody: '{"ok":true}',
+              responseBodySize: 11,
+              responseMimeType: 'application/json',
             },
           ],
         },
@@ -32,6 +35,7 @@ describe('HAR export', () => {
     expect(har).not.toContain('TOP_SECRET');
     expect(har).toContain('[REDACTED]');
     expect(har).toContain('developer');
-    expect(har).toContain('bodies not captured');
+    expect(har).toContain('{\\"ok\\":true}');
+    expect(har).toContain('application/json');
   });
 });

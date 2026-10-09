@@ -30,6 +30,7 @@ function toHarEntry(entry: TrafficEntry) {
   const requestHeaders = safeHeaders(entry.requestHeaders);
   const responseHeaders = safeHeaders(entry.responseHeaders);
   const duration = Math.max(0, entry.durationMs ?? 0);
+  const responseSize = entry.responseBodySize ?? 0;
   const url = safeUrl(entry.url);
   let queryString: Array<{ name: string; value: string }> = [];
   try {
@@ -57,16 +58,24 @@ function toHarEntry(entry: TrafficEntry) {
       httpVersion: 'HTTP/1.1',
       headers: responseHeaders,
       cookies: [],
-      content: { size: 0, mimeType: '' },
+      content: {
+        size: responseSize,
+        mimeType: entry.responseMimeType ?? '',
+        ...(entry.responseBody !== undefined ? { text: entry.responseBody } : {}),
+        ...(entry.responseBodyEncoding ? { encoding: entry.responseBodyEncoding } : {}),
+        ...(entry.responseBodyTruncated
+          ? { comment: 'Respuesta truncada por el límite de sesión.' }
+          : {}),
+      },
       redirectURL:
         responseHeaders.find((header) => header.name.toLowerCase() === 'location')?.value ?? '',
       headersSize: headerSize(responseHeaders),
-      bodySize: -1,
+      bodySize: entry.responseBodySize ?? -1,
     },
     cache: {},
     timings: { send: 0, wait: duration, receive: 0 },
     serverIPAddress: entry.ip,
-    comment: `Pestaña ${entry.tabId} de FakeHeader; tipo de recurso ${entry.type}; cuerpos no capturados`,
+    comment: `Pestaña ${entry.tabId} de FakeHeader; tipo de recurso ${entry.type}; cuerpo de solicitud no capturado`,
   };
 }
 
@@ -84,7 +93,8 @@ export function exportRecorderHar(state: RecorderState, tabId?: number): string 
           .flatMap((session) => session.entries)
           .sort((first, second) => first.startedAt - second.startedAt)
           .map(toHarEntry),
-        comment: 'Exportación local saneada. Los cuerpos de solicitud y respuesta se omiten de forma intencionada.',
+        comment:
+          'Exportación local. Las URL y cabeceras sensibles se sanean; los cuerpos de respuesta capturados se incluyen y pueden contener datos privados.',
       },
     },
     null,

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { APP_NAME } from '../config';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ACTIVE_TABS_KEY, APP_NAME, RECORDER_KEY, SCRIPT_ACTIVITY_KEY } from '../config';
 import type { HeaderRule } from '../types/rule';
 import type { RecorderResult } from '../types/recorder';
 import type { ScriptActivityEntry, ScriptActivityResult } from '../types/script-activity';
@@ -55,6 +55,7 @@ function Toggle({
 export default function App() {
   const { settings, error, notice, setError, commit, reload } = useSettings();
   const [tabId, setTabId] = useState<number>();
+  const [tabStateLoaded, setTabStateLoaded] = useState(false);
   const [activeProfileId, setActiveProfileId] = useState('');
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState('');
@@ -67,42 +68,85 @@ export default function App() {
   const [quickSecretRevealed, setQuickSecretRevealed] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordedRequests, setRecordedRequests] = useState(0);
+  const [recorderCaptureError, setRecorderCaptureError] = useState('');
   const [scriptNotice, setScriptNotice] = useState('');
   const [lastScriptActivity, setLastScriptActivity] = useState<ScriptActivityEntry>();
+  const tabRefreshVersion = useRef(0);
+  const recorderRefreshVersion = useRef(0);
+  const scriptRefreshVersion = useRef(0);
   const refreshScriptActivity = useCallback(async (currentTabId: number) => {
+    const version = ++scriptRefreshVersion.current;
     const response = (await chrome.runtime.sendMessage({
       type: 'get-script-activity',
     })) as ScriptActivityResult | undefined;
+    if (version !== scriptRefreshVersion.current) return;
     setLastScriptActivity(
       response?.ok ? response.activity?.find((entry) => entry.tabId === currentTabId) : undefined,
     );
   }, []);
   const refreshRecorder = useCallback(async (currentTabId: number) => {
+    const version = ++recorderRefreshVersion.current;
     const response = (await chrome.runtime.sendMessage({
       type: 'get-recorder-state',
     })) as RecorderResult | undefined;
+    if (version !== recorderRefreshVersion.current) return;
     const session = response?.state?.tabs[String(currentTabId)];
     setRecording(Boolean(session?.active));
     setRecordedRequests(session?.entries.length ?? 0);
+    setRecorderCaptureError(session?.captureError ?? '');
   }, []);
   const refreshTabState = useCallback(async () => {
+    const version = ++tabRefreshVersion.current;
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab.id === undefined) return;
-    setTabId(tab.id);
+    if (tab.id === undefined || version !== tabRefreshVersion.current) return;
     const execution = (await chrome.runtime.sendMessage({
       type: 'get-tab-state',
       tabId: tab.id,
     })) as RuntimeResult;
+    if (version !== tabRefreshVersion.current) return;
+    setTabId(tab.id);
     const profileId = execution.enabled ? (execution.profileId ?? '') : '';
     setActiveProfileId(profileId);
     setSelectedProfileId((current) => profileId || current);
-    if (execution.environmentId) setSelectedEnvironmentId(execution.environmentId);
+    if (execution.enabled) setSelectedEnvironmentId(execution.environmentId ?? '');
+    setTabStateLoaded(true);
     setExpiresAt(execution.expiresAt);
     await Promise.all([refreshRecorder(tab.id), refreshScriptActivity(tab.id)]);
   }, [refreshRecorder, refreshScriptActivity]);
   useEffect(() => {
     void refreshTabState();
   }, [refreshTabState]);
+  useEffect(() => {
+    if (tabId === undefined) return;
+    let tabTimer: number | undefined;
+    let recorderTimer: number | undefined;
+    let scriptTimer: number | undefined;
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName !== 'session') return;
+      if (changes[ACTIVE_TABS_KEY]) {
+        if (tabTimer !== undefined) window.clearTimeout(tabTimer);
+        tabTimer = window.setTimeout(() => void refreshTabState(), 50);
+      }
+      if (changes[RECORDER_KEY]) {
+        if (recorderTimer !== undefined) window.clearTimeout(recorderTimer);
+        recorderTimer = window.setTimeout(() => void refreshRecorder(tabId), 100);
+      }
+      if (changes[SCRIPT_ACTIVITY_KEY]) {
+        if (scriptTimer !== undefined) window.clearTimeout(scriptTimer);
+        scriptTimer = window.setTimeout(() => void refreshScriptActivity(tabId), 50);
+      }
+    };
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => {
+      if (tabTimer !== undefined) window.clearTimeout(tabTimer);
+      if (recorderTimer !== undefined) window.clearTimeout(recorderTimer);
+      if (scriptTimer !== undefined) window.clearTimeout(scriptTimer);
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
+  }, [refreshRecorder, refreshScriptActivity, refreshTabState, tabId]);
   const profile = useMemo(
     () =>
       settings?.profiles.find((item) => item.id === (activeProfileId || selectedProfileId)) ??
@@ -116,6 +160,8 @@ export default function App() {
       ),
     [profile],
   );
+  const totalRuleCount = profile?.rules.length ?? 0;
+  const enabledRuleCount = profile?.rules.filter((rule) => rule.enabled).length ?? 0;
   const environmentNeedsSecret = (environmentId: string) =>
     settings?.environments
       .find((item) => item.id === environmentId)
@@ -124,9 +170,9 @@ export default function App() {
     if (profile && !selectedProfileId) setSelectedProfileId(profile.id);
   }, [profile, selectedProfileId]);
   useEffect(() => {
-    if (!selectedEnvironmentId && settings?.environments[0])
+    if (tabStateLoaded && !activeProfileId && !selectedEnvironmentId && settings?.environments[0])
       setSelectedEnvironmentId(settings.environments[0].id);
-  }, [selectedEnvironmentId, settings]);
+  }, [activeProfileId, selectedEnvironmentId, settings, tabStateLoaded]);
   if (!settings || tabId === undefined)
     return (
       <main className="popup">
@@ -280,16 +326,18 @@ export default function App() {
       const recorderOrigins = profile ? originsForProfiles([profile]) : [];
       if (
         !window.confirm(
-          `FakeHeader guardará localmente metadatos y cabeceras censuradas de esta pestaña. No capturará cuerpos.\n\nHosts solicitados:\n${recorderOrigins.length ? recorderOrigins.join('\n') : 'Ninguno nuevo; sólo hosts ya concedidos.'}\n\n¿Empezar?`,
+          `FakeHeader conectará el depurador de red de Chrome a esta pestaña para capturar las respuestas completas. Los cuerpos pueden contener datos personales o secretos y se conservarán únicamente durante la sesión. DevTools debe permanecer cerrado mientras se graba.\n\nHosts solicitados:\n${recorderOrigins.length ? recorderOrigins.join('\n') : 'Ninguno nuevo; sólo la pestaña actual.'}\n\n¿Empezar?`,
         )
       )
         return;
       const granted = await chrome.permissions.request({
-        permissions: ['webRequest'],
+        permissions: ['webRequest', 'scripting', 'webNavigation'],
         ...(recorderOrigins.length ? { origins: recorderOrigins } : {}),
       });
       if (!granted) {
-        setError('Se necesita el permiso webRequest para observar el tráfico de la pestaña.');
+        setError(
+          'Se necesitan los permisos webRequest, scripting y webNavigation para capturar respuestas completas.',
+        );
         return;
       }
     }
@@ -407,6 +455,7 @@ export default function App() {
             value={selectedEnvironmentId}
             onChange={(event) => void selectEnvironment(event.target.value)}
           >
+            <option value="">Sin entorno</option>
             {settings.environments.map((environment) => (
               <option key={environment.id} value={environment.id}>
                 {environment.name}
@@ -418,7 +467,7 @@ export default function App() {
       <div className="current-tab-action">
         <strong>{enabledHere ? 'Activado en esta pestaña' : 'Desactivado en esta pestaña'}</strong>
         <span className="muted">
-          Reglas: {profile?.rules.filter((rule) => rule.enabled).length ?? 0}
+          Reglas activas: {enabledRuleCount} de {totalRuleCount}
         </span>
         {enabledHere && expiresAt && (
           <span className="muted">Caduca: {new Date(expiresAt).toLocaleTimeString()}</span>
@@ -448,7 +497,10 @@ export default function App() {
       </label>
       <div className="current-tab-action recorder-popup-card">
         <strong>{recording ? 'Grabando esta pestaña' : 'Grabador de tráfico'}</strong>
-        <span className="muted">{recordedRequests} solicitudes - cabeceras censuradas - sin cuerpos</span>
+        <span className="muted">
+          {recordedRequests} solicitudes - cabeceras censuradas - respuestas completas
+        </span>
+        {recorderCaptureError && <span className="activity-error">{recorderCaptureError}</span>}
         <button
           className={recording ? 'button danger' : 'button secondary'}
           onClick={() => void toggleRecording()}

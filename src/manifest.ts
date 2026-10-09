@@ -7,7 +7,7 @@ export const extensionManifest = {
   description: 'Herramientas HTTP locales con activación segura por pestaña.',
   version: '1.0.0',
   minimum_chrome_version: '135',
-  permissions: ['storage', 'declarativeNetRequestWithHostAccess', 'activeTab'],
+  permissions: ['storage', 'declarativeNetRequestWithHostAccess', 'activeTab', 'debugger'],
   optional_permissions: [
     'webNavigation',
     'alarms',

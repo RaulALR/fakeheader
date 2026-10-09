@@ -771,7 +771,11 @@ export default function App() {
                 }}
               >
                 <span>{profile.name}</span>
-                <small>{profile.rules.filter((rule) => rule.enabled).length}</small>
+                  <small
+                    title={`${profile.rules.filter((rule) => rule.enabled).length} reglas activas de ${profile.rules.length}`}
+                  >
+                    {profile.rules.filter((rule) => rule.enabled).length}/{profile.rules.length}
+                  </small>
               </button>
             ))}
           </div>
@@ -1377,7 +1381,7 @@ export default function App() {
                   <span className="eyebrow">GRABADOR DE TRÁFICO LOCAL</span>
                   <h1>Inspecciona y exporta peticiones</h1>
                   <p className="muted">
-                    Captura local por pestaña con cabeceras sensibles censuradas y exportación HAR.
+                    Captura local por pestaña con respuestas completas de fetch/XHR y exportación HAR.
                   </p>
                 </div>
               </div>

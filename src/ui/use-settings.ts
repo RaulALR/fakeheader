@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { STORAGE_KEY } from '../config';
 import type { FakeHeaderSettings } from '../types/profile';
 import { getActiveTabs, getSettings } from '../storage/storage';
 import { requestHostAccess } from '../utils/permissions';
@@ -13,17 +14,30 @@ export function useSettings() {
   const [settings, setSettings] = useState<FakeHeaderSettings | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const reloadVersion = useRef(0);
 
   const reload = useCallback(async () => {
+    const version = ++reloadVersion.current;
     try {
-      setSettings(await getSettings());
+      const next = await getSettings();
+      if (version !== reloadVersion.current) return;
+      setSettings(next);
       setError('');
     } catch {
+      if (version !== reloadVersion.current) return;
       setError('No se pudo leer la configuración. FakeHeader permanece cerrado.');
     }
   }, []);
   useEffect(() => {
     void reload();
+    const handleStorageChange = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName === 'local' && changes[STORAGE_KEY]) void reload();
+    };
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    return () => chrome.storage.onChanged.removeListener(handleStorageChange);
   }, [reload]);
 
   const commit = useCallback(

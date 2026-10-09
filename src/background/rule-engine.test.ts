@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FakeHeaderSettings } from '../types/profile';
 import type { ActiveTabStateMap } from '../types/session';
 import {
+  activationProfileError,
   applySettingsTransaction,
   commitTabTransition,
   getExecutionInspector,
+  getTabExecutionState,
   handleCommittedNavigation,
+  migrateReplacedTab,
   withoutTab,
   type TabTransitionDependencies,
 } from './rule-engine';
@@ -41,6 +44,22 @@ const settings: FakeHeaderSettings = {
 
 describe('tab lifecycle and fail-closed transitions', () => {
   afterEach(() => vi.unstubAllGlobals());
+
+  it('distinguishes disabled rules from a missing profile during activation', () => {
+    const disabledSettings: FakeHeaderSettings = {
+      ...settings,
+      profiles: settings.profiles.map((profile) => ({
+        ...profile,
+        rules: profile.rules.map((rule) => ({ ...rule, enabled: false })),
+      })),
+    };
+
+    expect(activationProfileError(disabledSettings, 'dev')).toContain('todos están desactivados');
+    expect(activationProfileError(disabledSettings, 'missing')).toBe(
+      'El perfil seleccionado no existe.',
+    );
+    expect(activationProfileError(settings, 'dev')).toBeNull();
+  });
 
   it('closing an active tab removes its compiled rules', () => {
     const active: ActiveTabStateMap = {
@@ -139,6 +158,96 @@ describe('tab lifecycle and fail-closed transitions', () => {
     expect(storedTabs).toEqual({});
     expect(badge).toBe(false);
     expect(dependencies.emergencyDisable).not.toHaveBeenCalled();
+  });
+
+  it('repairs missing DNR rules without clearing the stored tab activation', async () => {
+    let tabs: ActiveTabStateMap = { '9': { tabId: 9, profileId: 'dev' } };
+    let rules: chrome.declarativeNetRequest.Rule[] = [];
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: { get: vi.fn(async () => ({ fakeHeaderSettings: settings })) },
+        session: {
+          get: vi.fn(async (key: string) => {
+            if (key === 'fakeHeaderActiveTabs') return { fakeHeaderActiveTabs: tabs };
+            if (key === 'fakeHeaderSecrets') return { fakeHeaderSecrets: {} };
+            return {};
+          }),
+          set: vi.fn(async (value: Record<string, unknown>) => {
+            if ('fakeHeaderActiveTabs' in value)
+              tabs = value.fakeHeaderActiveTabs as ActiveTabStateMap;
+          }),
+          remove: vi.fn(async () => undefined),
+        },
+      },
+      declarativeNetRequest: {
+        getSessionRules: vi.fn(async () => rules),
+        updateSessionRules: vi.fn(
+          async (value: { addRules: chrome.declarativeNetRequest.Rule[] }) => {
+            rules = value.addRules;
+          },
+        ),
+      },
+      tabs: { query: vi.fn(async () => []) },
+      action: {
+        setBadgeBackgroundColor: vi.fn(async () => undefined),
+        setBadgeText: vi.fn(async () => undefined),
+      },
+    });
+
+    const result = await getTabExecutionState(9);
+
+    expect(result).toMatchObject({ ok: true, enabled: true, profileId: 'dev' });
+    expect(tabs['9']).toEqual({ tabId: 9, profileId: 'dev' });
+    expect(rules.some((rule) => rule.condition.tabIds?.includes(9))).toBe(true);
+  });
+
+  it('migrates activation to the new id when Chrome replaces a tab', async () => {
+    const replacementSettings: FakeHeaderSettings = {
+      ...settings,
+      environments: [{ id: 'local', name: 'Local', variables: [] }],
+    };
+    let tabs: ActiveTabStateMap = {
+      '11': { tabId: 11, profileId: 'dev', environmentId: 'local' },
+    };
+    let rules = compileSessionRules(replacementSettings, tabs);
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: { get: vi.fn(async () => ({ fakeHeaderSettings: replacementSettings })) },
+        session: {
+          get: vi.fn(async (key: string) =>
+            key === 'fakeHeaderActiveTabs'
+              ? { fakeHeaderActiveTabs: tabs }
+              : { fakeHeaderSecrets: {} },
+          ),
+          set: vi.fn(async (value: Record<string, unknown>) => {
+            if ('fakeHeaderActiveTabs' in value)
+              tabs = value.fakeHeaderActiveTabs as ActiveTabStateMap;
+          }),
+          remove: vi.fn(async () => undefined),
+        },
+      },
+      declarativeNetRequest: {
+        getSessionRules: vi.fn(async () => rules),
+        updateSessionRules: vi.fn(
+          async (value: { addRules: chrome.declarativeNetRequest.Rule[] }) => {
+            rules = value.addRules;
+          },
+        ),
+      },
+      permissions: { contains: vi.fn(async () => false) },
+      action: {
+        setBadgeBackgroundColor: vi.fn(async () => undefined),
+        setBadgeText: vi.fn(async () => undefined),
+      },
+    });
+
+    const result = await migrateReplacedTab(12, 11);
+
+    expect(result.ok).toBe(true);
+    expect(tabs['11']).toBeUndefined();
+    expect(tabs['12']).toEqual({ tabId: 12, profileId: 'dev', environmentId: 'local' });
+    expect(rules.every((rule) => rule.condition.tabIds?.includes(12))).toBe(true);
+    expect(rules.every((rule) => !rule.condition.tabIds?.includes(11))).toBe(true);
   });
 
   it('rolls session data and persistent settings back when a configuration DNR update fails', async () => {
